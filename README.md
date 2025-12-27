@@ -1,111 +1,202 @@
-# iMessage MCP Server
+# Enhanced iMessage MCP Server
 
-⚠️ DISCLAIMER - USE AT YOUR OWN RISK ⚠️
-
-This software is provided as-is, without any warranties or guarantees.
-
-An MCP server that uses AppleScript to send iMessages and manage contacts.
-
-This server uses AppleScript to interface with macOS Messages and Contacts apps through the Model Context Protocol (MCP). It wraps AppleScript commands in a TypeScript server to allow you to:
-
-- View and search your contacts
-- Send iMessages to contacts or phone numbers
-- Get confirmation when messages are sent
+A comprehensive MCP (Model Context Protocol) server for iMessage on macOS. Read, send, and search your messages with AI assistants like Claude.
 
 ## Features
 
+### Tools (12 total)
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send iMessage or SMS with automatic fallback |
+| `get_recent_messages` | Get recent messages with time/contact filters |
+| `get_conversation` | Get conversation history with a specific contact |
+| `search_messages` | Search messages by text content |
+| `list_chats` | List all conversations including group chats |
+| `get_unread_count` | Get count of unread messages |
+| `check_imessage_available` | Check if recipient has iMessage |
+| `search_contacts` | Search contacts by name, phone, or email |
+| `get_attachments` | Get recent message attachments (photos, videos, files) |
+| `get_group_chat_members` | Get members of a group chat |
+| `find_chat` | Find a chat by contact info |
+| `check_database_access` | Diagnose permission issues |
+
 ### Resources
 
-- Access your contacts via `contacts://all`
-- View contact details including names, phone numbers, and email addresses
-- All data stays local on your machine
+| Resource | Description |
+|----------|-------------|
+| `contacts://all` | List of all contacts from Contacts app |
+| `messages://recent` | Recent messages (last 24 hours) |
+| `chats://all` | List of all chat conversations |
 
-### Tools
+### Key Improvements Over Original
 
-- `search_contacts` - Find contacts by name, phone, or email
+- **Read messages** - Query the Messages database directly
+- **Search functionality** - Find messages by content
+- **Conversation history** - Get full chat history with any contact
+- **Group chat support** - Send messages to group chats, list members
+- **SMS fallback** - Automatically falls back to SMS when iMessage unavailable
+- **Unread count** - Check how many unread messages you have
+- **Attachment info** - View details about photos, videos, and files
+- **Database diagnostics** - Built-in permission troubleshooting
+- **Modular codebase** - Well-organized, tested code
 
-  - Takes a search query and returns matching contacts
-  - Searches across names, phone numbers, and email addresses
+## Requirements
 
-- `send_message` - Send an iMessage
-  - Takes recipient (phone/email) and message content
-  - Sends through your local Messages app
-  - Returns confirmation or error details
+- macOS (Messages app integration)
+- Node.js 18 or higher
+- Full Disk Access permission (for reading Messages database)
+- Active iMessage account
 
 ## Installation
 
-1. Install dependencies:
+### With Claude Code
 
 ```bash
-npm install
+claude mcp add imessage -- npx -y imessage-mcp-server
 ```
 
-2. Build the server:
+### With Claude Desktop
 
-```bash
-npm run build
-```
-
-3. Configure Claude Desktop to use the server:
-
-On MacOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "imessage": {
-      "command": "node",
-      "args": ["/path/to/imessage-server/build/server.js"]
+      "command": "npx",
+      "args": ["-y", "imessage-mcp-server"]
     }
   }
 }
 ```
 
-4. Restart Claude Desktop
+### From Source
 
-5. Grant permissions when prompted for:
-   - Contacts access
-   - Messages access
+```bash
+git clone https://github.com/haasonsaas/imessage-mcp-server.git
+cd imessage-mcp-server
+npm install
+npm run build
+```
 
-## Usage
+## Permissions
 
-Once installed, you can talk to Claude Desktop naturally:
+### Full Disk Access (Required for reading messages)
 
-- "Show me my contacts"
-- "Search for contacts named Marissa"
-- "Send a message to 555-0123 saying I'll be there in 10 minutes"
-- "Send Alice an iMessage asking if we're still on for lunch"
+1. Open **System Preferences → Privacy & Security → Full Disk Access**
+2. Click the lock to unlock settings
+3. Click **+** and add your terminal app (Terminal, iTerm2, VS Code, etc.)
+4. Restart your terminal/application
 
-## Security Notes
+### Messages & Contacts Access
 
-- All operations happen locally on your machine
-- No contact or message data is sent to external servers
-- The server requires macOS permissions for Contacts and Messages access
-- Messages are sent through your iMessage account
+When you first use the server, macOS will prompt for:
+- **Contacts access** - For contact search features
+- **Messages access** - For sending messages via AppleScript
+
+## Usage Examples
+
+Once installed, you can interact naturally:
+
+```
+"Show me my recent messages"
+"Get my conversation with John"
+"Search my messages for 'dinner plans'"
+"Send a message to 555-123-4567 saying I'm running late"
+"How many unread messages do I have?"
+"List my group chats"
+"Check if john@example.com has iMessage"
+"Show me recent photo attachments"
+"Who's in the Family group chat?"
+```
+
+## How It Works
+
+This server uses a hybrid approach:
+
+- **AppleScript** for sending messages (reliable, works with iMessage/SMS)
+- **SQLite** for reading messages (direct database access, fast queries)
+
+The Messages database is located at `~/Library/Messages/chat.db` and requires Full Disk Access to read.
 
 ## Development
 
-For development and debugging, use the MCP Inspector:
-
 ```bash
-npx @modelcontextprotocol/inspector node build/server.js
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Watch mode
+npm run watch
+
+# Run tests
+npm test
+
+# Run tests with coverage
+npm run test:coverage
+
+# Lint
+npm run lint
+
+# Format
+npm run format
+
+# Full check (typecheck + lint + format + test)
+npm run check
+
+# Test with MCP Inspector
+npm run inspector
 ```
 
-## Requirements
+## Project Structure
 
-- macOS (for Messages and Contacts integration)
-- Node.js 18 or higher
-- Claude Desktop
-- Active iMessage account
+```
+src/
+├── index.ts           # Main MCP server entry point
+└── lib/
+    ├── types.ts       # TypeScript type definitions
+    ├── utils.ts       # Pure utility functions
+    ├── database.ts    # SQLite database operations
+    └── applescript.ts # AppleScript operations
+tests/
+└── utils.test.ts      # Unit tests for utilities
+```
 
 ## Troubleshooting
 
-If messages aren't sending:
+### "Cannot access Messages database"
 
-1. Check Messages app is signed in
-2. Verify permissions are granted
-3. Look for errors in Claude Desktop logs:
+1. Grant Full Disk Access (see Permissions above)
+2. Restart your terminal
+3. Run `check_database_access` tool to verify
 
-```bash
-tail -f ~/Library/Logs/Claude/mcp*.log
-```
+### Messages not sending
+
+1. Ensure Messages app is signed in
+2. Check that the recipient is valid
+3. For group chats, use the `groupChat: true` option
+
+### No contacts showing
+
+1. Grant Contacts access when prompted
+2. Ensure Contacts app has contacts
+
+## Security Notes
+
+- All data stays local on your machine
+- Database is opened in read-only mode
+- No external network requests
+- Messages are sent through your local Messages app
+
+## License
+
+MIT
+
+## Credits
+
+Based on [marissamarym/imessage-mcp-server](https://github.com/marissamarym/imessage-mcp-server), enhanced with:
+- Direct database reading (inspired by [hannesrudolph/imessage-query-fastmcp-mcp-server](https://github.com/hannesrudolph/imessage-query-fastmcp-mcp-server))
+- Additional tools from [carterlasalle/mac_messages_mcp](https://github.com/carterlasalle/mac_messages_mcp)

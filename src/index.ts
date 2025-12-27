@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
 /**
- * An MCP server that uses AppleScript to send iMessages and interact with Contacts.
- * It provides tools to:
- * - Send iMessages through the Messages app
- * - View contacts through the Contacts app
+ * Enhanced iMessage MCP Server
+ *
+ * A comprehensive MCP server for iMessage that provides:
+ * - Send messages via AppleScript (iMessage + SMS fallback)
+ * - Read messages directly from the Messages database
+ * - Search messages by content
+ * - List and manage conversations
+ * - Contact management and search
+ * - Group chat support
+ * - iMessage availability checking
+ * - Attachment information
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -15,30 +22,42 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { execFile } from "child_process";
-import { promisify } from "util";
 
-const execFileAsync = promisify(execFile);
+import {
+  checkDatabaseAccess,
+  getRecentMessages,
+  getConversation,
+  searchMessages,
+  listChats,
+  getUnreadCount,
+  getDatabaseStats,
+  getRecentAttachments,
+  getGroupChatMembers,
+  findChatByContact,
+} from "./lib/database.js";
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return String(error);
-}
+import {
+  sendMessage,
+  checkImessageAvailable,
+  getAllContacts,
+  searchContacts,
+} from "./lib/applescript.js";
 
-async function runAppleScript(script: string): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("osascript", ["-e", script]);
-    return stdout.trim();
-  } catch (error) {
-    throw new Error(`AppleScript error: ${getErrorMessage(error)}`);
-  }
-}
+import {
+  getErrorMessage,
+  normalizeLimit,
+  normalizeHours,
+  normalizeDays,
+  formatFileSize,
+} from "./lib/utils.js";
 
+const VERSION = "0.2.0";
+
+// Server setup
 const server = new Server(
   {
-    name: "iMessage-AppleScript-Server",
-    version: "0.1.0",
+    name: "imessage-mcp-server",
+    version: VERSION,
   },
   {
     capabilities: {
@@ -48,6 +67,7 @@ const server = new Server(
   }
 );
 
+// Resources
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   return {
     resources: [
@@ -57,72 +77,71 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
         name: "All Contacts",
         description: "List of all contacts from the Contacts app",
       },
+      {
+        uri: "messages://recent",
+        mimeType: "application/json",
+        name: "Recent Messages",
+        description: "Recent messages from all conversations (last 24 hours)",
+      },
+      {
+        uri: "chats://all",
+        mimeType: "application/json",
+        name: "All Chats",
+        description: "List of all chat conversations",
+      },
     ],
   };
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  if (request.params.uri !== "contacts://all") {
-    throw new Error(`Unknown resource: ${request.params.uri}`);
+  const uri = request.params.uri;
+
+  if (uri === "contacts://all") {
+    try {
+      const contacts = await getAllContacts();
+      return {
+        contents: [{ uri, mimeType: "application/json", text: JSON.stringify(contacts, null, 2) }],
+      };
+    } catch (error) {
+      throw new Error(`Failed to fetch contacts: ${getErrorMessage(error)}`);
+    }
   }
 
-  const script = `
-    tell application "Contacts"
-      set output to "["
-      repeat with p in every person
-        if output is not "[" then
-          set output to output & ","
-        end if
-        set output to output & "{"
-        set output to output & "\\"name\\":\\"" & (name of p as text) & "\\","
-        set output to output & "\\"phones\\":["
-        set firstPhone to true
-        repeat with ph in phones of p
-          if not firstPhone then
-            set output to output & ","
-          end if
-          set output to output & "\\"" & (value of ph) & "\\""
-          set firstPhone to false
-        end repeat
-        set output to output & "],"
-        set output to output & "\\"emails\\":["
-        set firstEmail to true
-        repeat with em in emails of p
-          if not firstEmail then
-            set output to output & ","
-          end if
-          set output to output & "\\"" & (value of em) & "\\""
-          set firstEmail to false
-        end repeat
-        set output to output & "]"
-        set output to output & "}"
-      end repeat
-      return output & "]"
-    end tell
-  `;
+  if (uri === "messages://recent") {
+    const dbCheck = checkDatabaseAccess();
+    if (!dbCheck.accessible) {
+      throw new Error(dbCheck.error);
+    }
 
-  try {
-    const contacts = await runAppleScript(script);
+    const messages = getRecentMessages(24, undefined, 100);
     return {
-      contents: [
-        {
-          uri: request.params.uri,
-          mimeType: "application/json",
-          text: contacts,
-        },
-      ],
+      contents: [{ uri, mimeType: "application/json", text: JSON.stringify(messages, null, 2) }],
     };
-  } catch (error) {
-    throw new Error(`Failed to fetch contacts: ${getErrorMessage(error)}`);
   }
+
+  if (uri === "chats://all") {
+    const dbCheck = checkDatabaseAccess();
+    if (!dbCheck.accessible) {
+      throw new Error(dbCheck.error);
+    }
+
+    const chats = listChats(50, true);
+    return {
+      contents: [{ uri, mimeType: "application/json", text: JSON.stringify(chats, null, 2) }],
+    };
+  }
+
+  throw new Error(`Unknown resource: ${uri}`);
 });
 
+// Tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "send_imessage",
-        description: "Send an iMessage using Messages app",
+        name: "send_message",
+        description:
+          "Send an iMessage or SMS. Automatically falls back to SMS if iMessage is unavailable.",
         inputSchema: {
           type: "object",
           properties: {
@@ -134,22 +153,200 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Message content to send",
             },
+            groupChat: {
+              type: "boolean",
+              description:
+                "Set to true if sending to a group chat (use chat identifier as recipient)",
+              default: false,
+            },
           },
           required: ["recipient", "message"],
         },
       },
       {
-        name: "search_contacts",
-        description: "Search contacts by name, phone, or email",
+        name: "get_recent_messages",
+        description: "Get recent messages, optionally filtered by contact or time range",
+        inputSchema: {
+          type: "object",
+          properties: {
+            hours: {
+              type: "number",
+              description: "Number of hours to look back (default: 24, max: 168)",
+              default: 24,
+            },
+            contact: {
+              type: "string",
+              description: "Filter by phone number or email (optional)",
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of messages to return (default: 50, max: 500)",
+              default: 50,
+            },
+          },
+        },
+      },
+      {
+        name: "get_conversation",
+        description: "Get the conversation history with a specific contact",
+        inputSchema: {
+          type: "object",
+          properties: {
+            contact: {
+              type: "string",
+              description: "Phone number or email of the contact",
+            },
+            days: {
+              type: "number",
+              description: "Number of days to look back (default: 7, max: 365)",
+              default: 7,
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of messages to return (default: 100, max: 1000)",
+              default: 100,
+            },
+          },
+          required: ["contact"],
+        },
+      },
+      {
+        name: "search_messages",
+        description: "Search messages by text content",
         inputSchema: {
           type: "object",
           properties: {
             query: {
               type: "string",
-              description: "Search query",
+              description: "Text to search for in messages",
+            },
+            days: {
+              type: "number",
+              description: "Number of days to search back (default: 30, max: 365)",
+              default: 30,
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of results (default: 50, max: 200)",
+              default: 50,
             },
           },
           required: ["query"],
+        },
+      },
+      {
+        name: "list_chats",
+        description: "List all chat conversations including group chats",
+        inputSchema: {
+          type: "object",
+          properties: {
+            limit: {
+              type: "number",
+              description: "Maximum number of chats to return (default: 30, max: 100)",
+              default: 30,
+            },
+            includeGroupChats: {
+              type: "boolean",
+              description: "Include group chats in results (default: true)",
+              default: true,
+            },
+          },
+        },
+      },
+      {
+        name: "get_unread_count",
+        description: "Get the count of unread messages",
+        inputSchema: {
+          type: "object",
+          properties: {},
+        },
+      },
+      {
+        name: "check_imessage_available",
+        description: "Check if a recipient has iMessage available (vs SMS only)",
+        inputSchema: {
+          type: "object",
+          properties: {
+            recipient: {
+              type: "string",
+              description: "Phone number or email to check",
+            },
+          },
+          required: ["recipient"],
+        },
+      },
+      {
+        name: "search_contacts",
+        description: "Search contacts by name, phone number, or email",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Search query (name, phone, or email)",
+            },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "get_attachments",
+        description: "Get recent message attachments (photos, videos, files)",
+        inputSchema: {
+          type: "object",
+          properties: {
+            days: {
+              type: "number",
+              description: "Number of days to look back (default: 7, max: 30)",
+              default: 7,
+            },
+            contact: {
+              type: "string",
+              description: "Filter by phone number or email (optional)",
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of messages with attachments (default: 20, max: 100)",
+              default: 20,
+            },
+          },
+        },
+      },
+      {
+        name: "get_group_chat_members",
+        description: "Get the members of a group chat",
+        inputSchema: {
+          type: "object",
+          properties: {
+            chatIdentifier: {
+              type: "string",
+              description: "The chat identifier (can be found from list_chats)",
+            },
+          },
+          required: ["chatIdentifier"],
+        },
+      },
+      {
+        name: "find_chat",
+        description: "Find a chat by contact phone number or email",
+        inputSchema: {
+          type: "object",
+          properties: {
+            contact: {
+              type: "string",
+              description: "Phone number or email to search for",
+            },
+          },
+          required: ["contact"],
+        },
+      },
+      {
+        name: "check_database_access",
+        description:
+          "Check if the Messages database is accessible. Useful for diagnosing permission issues.",
+        inputSchema: {
+          type: "object",
+          properties: {},
         },
       },
     ],
@@ -157,29 +354,155 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  switch (request.params.name) {
-    case "send_imessage": {
-      const recipient = String(request.params.arguments?.recipient);
-      const message = String(request.params.arguments?.message);
+  const { name, arguments: args } = request.params;
+
+  switch (name) {
+    case "send_message": {
+      const recipient = String(args?.recipient || "");
+      const message = String(args?.message || "");
+      const groupChat = Boolean(args?.groupChat);
 
       if (!recipient || !message) {
         throw new Error("Recipient and message are required");
       }
 
-      const escapedMessage = message.replace(/"/g, '\\"');
-      const script = `
-        tell application "Messages"
-          send "${escapedMessage}" to buddy "${recipient}" of (service 1 whose service type = iMessage)
-        end tell
-      `;
+      try {
+        const result = await sendMessage(recipient, message, groupChat);
+        return {
+          content: [{ type: "text", text: result }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: getErrorMessage(error) }],
+          isError: true,
+        };
+      }
+    }
+
+    case "get_recent_messages": {
+      const hours = normalizeHours(args?.hours as number | undefined, 24, 168);
+      const contact = args?.contact ? String(args.contact) : undefined;
+      const limit = normalizeLimit(args?.limit as number | undefined, 50, 500);
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const messages = getRecentMessages(hours, contact, limit);
+      return {
+        content: [{ type: "text", text: JSON.stringify(messages, null, 2) }],
+      };
+    }
+
+    case "get_conversation": {
+      const contact = String(args?.contact || "");
+      const days = normalizeDays(args?.days as number | undefined, 7, 365);
+      const limit = normalizeLimit(args?.limit as number | undefined, 100, 1000);
+
+      if (!contact) {
+        throw new Error("Contact is required");
+      }
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const messages = getConversation(contact, days, limit);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Conversation with ${contact} (last ${days} days):\n\n${JSON.stringify(messages, null, 2)}`,
+          },
+        ],
+      };
+    }
+
+    case "search_messages": {
+      const query = String(args?.query || "");
+      const days = normalizeDays(args?.days as number | undefined, 30, 365);
+      const limit = normalizeLimit(args?.limit as number | undefined, 50, 200);
+
+      if (!query) {
+        throw new Error("Search query is required");
+      }
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const messages = searchMessages(query, days, limit);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${messages.length} messages matching "${query}":\n\n${JSON.stringify(messages, null, 2)}`,
+          },
+        ],
+      };
+    }
+
+    case "list_chats": {
+      const limit = normalizeLimit(args?.limit as number | undefined, 30, 100);
+      const includeGroupChats = args?.includeGroupChats !== false;
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const chats = listChats(limit, includeGroupChats);
+      return {
+        content: [{ type: "text", text: JSON.stringify(chats, null, 2) }],
+      };
+    }
+
+    case "get_unread_count": {
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const count = getUnreadCount();
+      return {
+        content: [{ type: "text", text: `You have ${count} unread message(s).` }],
+      };
+    }
+
+    case "check_imessage_available": {
+      const recipient = String(args?.recipient || "");
+
+      if (!recipient) {
+        throw new Error("Recipient is required");
+      }
 
       try {
-        await runAppleScript(script);
+        const isAvailable = await checkImessageAvailable(recipient);
         return {
           content: [
             {
               type: "text",
-              text: `Message sent successfully to ${recipient}`,
+              text: isAvailable
+                ? `✅ ${recipient} has iMessage available - messages will be sent via iMessage`
+                : `📱 ${recipient} does not have iMessage - messages will be sent via SMS`,
             },
           ],
         };
@@ -188,7 +511,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [
             {
               type: "text",
-              text: `Failed to send message: ${getErrorMessage(error)}`,
+              text: `Could not determine iMessage availability: ${getErrorMessage(error)}`,
             },
           ],
           isError: true,
@@ -197,63 +520,138 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case "search_contacts": {
-      const query = String(request.params.arguments?.query).toLowerCase();
+      const query = String(args?.query || "");
 
-      const script = `
-        tell application "Contacts"
-          set output to "["
-          set isFirst to true
-          repeat with p in every person
-            if ((name of p as text) contains "${query}") then
-              if not isFirst then
-                set output to output & ","
-              end if
-              set output to output & "{"
-              set output to output & "\\"name\\":\\"" & (name of p as text) & "\\","
-              set output to output & "\\"phones\\":["
-              set firstPhone to true
-              repeat with ph in phones of p
-                if not firstPhone then
-                  set output to output & ","
-                end if
-                set output to output & "\\"" & (value of ph) & "\\""
-                set firstPhone to false
-              end repeat
-              set output to output & "],"
-              set output to output & "\\"emails\\":["
-              set firstEmail to true
-              repeat with em in emails of p
-                if not firstEmail then
-                  set output to output & ","
-                end if
-                set output to output & "\\"" & (value of em) & "\\""
-                set firstEmail to false
-              end repeat
-              set output to output & "]"
-              set output to output & "}"
-              set isFirst to false
-            end if
-          end repeat
-          return output & "]"
-        end tell
-      `;
+      if (!query) {
+        throw new Error("Search query is required");
+      }
 
       try {
-        const results = await runAppleScript(script);
+        const contacts = await searchContacts(query);
         return {
-          content: [
-            {
-              type: "text",
-              text: results,
-            },
-          ],
+          content: [{ type: "text", text: JSON.stringify(contacts, null, 2) }],
         };
       } catch (error) {
         return {
+          content: [{ type: "text", text: `Search failed: ${getErrorMessage(error)}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case "get_attachments": {
+      const days = normalizeDays(args?.days as number | undefined, 7, 30);
+      const contact = args?.contact ? String(args.contact) : undefined;
+      const limit = normalizeLimit(args?.limit as number | undefined, 20, 100);
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const results = getRecentAttachments(days, contact, limit);
+
+      const formatted = results.map((item) => ({
+        message: {
+          ...item.message,
+          attachments: item.attachments.map((att) => ({
+            filename: att.filename,
+            type: att.mimeType,
+            size: formatFileSize(att.fileSize),
+            isSticker: att.isSticker,
+            isAudioMessage: att.isAudioMessage,
+          })),
+        },
+      }));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${results.length} messages with attachments:\n\n${JSON.stringify(formatted, null, 2)}`,
+          },
+        ],
+      };
+    }
+
+    case "get_group_chat_members": {
+      const chatIdentifier = String(args?.chatIdentifier || "");
+
+      if (!chatIdentifier) {
+        throw new Error("Chat identifier is required");
+      }
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const members = getGroupChatMembers(chatIdentifier);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              members.length > 0
+                ? `Group chat members:\n${members.map((m) => `- ${m}`).join("\n")}`
+                : "No members found or this is not a group chat.",
+          },
+        ],
+      };
+    }
+
+    case "find_chat": {
+      const contact = String(args?.contact || "");
+
+      if (!contact) {
+        throw new Error("Contact is required");
+      }
+
+      const dbCheck = checkDatabaseAccess();
+      if (!dbCheck.accessible) {
+        return {
+          content: [{ type: "text", text: dbCheck.error! }],
+          isError: true,
+        };
+      }
+
+      const chat = findChatByContact(contact);
+      if (chat) {
+        return {
+          content: [{ type: "text", text: JSON.stringify(chat, null, 2) }],
+        };
+      } else {
+        return {
+          content: [{ type: "text", text: `No chat found for ${contact}` }],
+        };
+      }
+    }
+
+    case "check_database_access": {
+      const result = checkDatabaseAccess();
+
+      if (result.accessible) {
+        const stats = getDatabaseStats();
+        return {
           content: [
             {
               type: "text",
-              text: `Search failed: ${getErrorMessage(error)}`,
+              text: `✅ Database access OK!\n\nStats:\n- Total messages: ${stats.totalMessages}\n- Total chats: ${stats.totalChats}\n- Total contacts in Messages: ${stats.totalContacts}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `❌ Database access failed:\n\n${result.error}\n\nTo fix:\n1. Open System Preferences → Privacy & Security → Full Disk Access\n2. Add your terminal application (Terminal, iTerm2, etc.)\n3. Restart your terminal`,
             },
           ],
           isError: true,
@@ -262,15 +660,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     default:
-      throw new Error("Unknown tool");
+      throw new Error(`Unknown tool: ${name}`);
   }
 });
 
+// Main entry point
 async function main() {
   try {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("iMessage AppleScript MCP server started");
+    console.error(`Enhanced iMessage MCP server started (v${VERSION})`);
   } catch (error) {
     console.error("Server error:", error);
     process.exit(1);

@@ -1,11 +1,11 @@
 {
   "name": "imessage-mcp-server",
-  "version": "0.1.0",
-  "description": "An MCP server to interact with iMessage and Contacts",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Enhanced MCP server for iMessage - read, send, search messages and manage contacts",
+  "private": false,
   "type": "module",
   "bin": {
-    "iMessage MCP Server": "./build/index.js"
+    "imessage-mcp-server": "./build/index.js"
   },
   "files": [
     "build"
@@ -14,13 +14,56 @@
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
     "prepare": "npm run build",
     "watch": "tsc --watch",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },
+  "keywords": [
+    "mcp",
+    "imessage",
+    "messages",
+    "macos",
+    "claude",
+    "ai",
+    "automation",
+    "sms",
+    "contacts"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haasonsaas/imessage-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haasonsaas/imessage-mcp-server/issues"
+  },
+  "homepage": "https://github.com/haasonsaas/imessage-mcp-server#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "0.6.0"
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "better-sqlite3": "^12.5.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.24",
-    "typescript": "^5.3.3"
+    "@typescript-eslint/eslint-plugin": "^8.50.1",
+    "@typescript-eslint/parser": "^8.50.1",
+    "@vitest/coverage-v8": "^4.0.16",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.7.4",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.50.1",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
